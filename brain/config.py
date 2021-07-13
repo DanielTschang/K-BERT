@@ -7,9 +7,10 @@ KGS = {
     'HowNet': os.path.join(FILE_DIR_PATH, 'kgs/HowNet.spo'),
     'CnDbpedia': os.path.join(FILE_DIR_PATH, 'kgs/CnDbpedia.spo'),
     'Medical': os.path.join(FILE_DIR_PATH, 'kgs/Medical.spo'),
+    'concate': os.path.join(FILE_DIR_PATH), 'kgs/concate.spo'
 }
 
-MAX_ENTITIES = 2
+MAX_ENTITIES = 5
 
 # Special token words.
 PAD_TOKEN = '[PAD]'
