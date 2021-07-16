@@ -9,13 +9,10 @@ import numpy as np
 import jieba
 
 import torch
-from transformers import BertTokenizer, BertModel
-from scipy.spatial.distance import cosine
-
-from brain.embedding_factory import EmbeddingFactory
-from os.path import dirname
-
-
+from torch.autograd import Variable
+import numpy as np
+import torch.functional as F
+import torch.nn.functional as F
 
 
 
@@ -24,19 +21,17 @@ class KnowledgeGraph(object):
     spo_files - list of Path of *.spo files, or default kg name. e.g., ['HowNet']
     """
 
-    def __init__(self, spo_files, embedding_type:str,folder_name:str,predicate=False):
+    def __init__(self, spo_files, predicate=False):
         self.predicate = predicate
         self.spo_file_paths = [config.KGS.get(f, f) for f in spo_files]
         self.lookup_table = self._create_lookup_table()
         self.segment_vocab = list(self.lookup_table.keys()) + config.NEVER_SPLIT_TAG
         self.tokenizer = pkuseg.pkuseg(model_name="default", postag=False, user_dict=self.segment_vocab)
         self.special_tags = set(config.NEVER_SPLIT_TAG)
-        self.embedding = EmbeddingFactory(embedding_type,folder_name).embedding
-        
+        self.word_index_dic, self.inverse_word_dic, self.W1, self.W2 = self.create_word_embedding()
 
     def _create_lookup_table(self):
         lookup_table = {}
-        print('start create look up table')
         for spo_path in self.spo_file_paths:
             print("[KnowledgeGraph] Loading spo from {}".format(spo_path))
             with open(spo_path, 'r', encoding='utf-8') as f:
@@ -53,9 +48,72 @@ class KnowledgeGraph(object):
                         lookup_table[subj].add(value)
                     else:
                         lookup_table[subj] = set([value])
-        print('end create look up table')
         return lookup_table
 
+    def create_word_embedding(self):
+        word_set = set()
+        pair_list = []
+        for spo_path in self.spo_file_paths:
+            print("[Train Word2Vec] Loading spo from {}".format(spo_path))
+            with open(spo_path, 'r', encoding='utf-8') as f:
+                for line in f:
+                    try:
+                        subj, pred, obje = line.strip().split("\t")
+                    except:
+                        print("[Train Word2Vec] Bad spo:", line)
+                    word_set.add(subj)
+                    word_set.add(obje)
+                    pair_list.append((subj, obje))
+        word_index_dic, inverse_word_dic = self.__get_word_index(word_set)
+        word_size = len(word_set)
+        batch_size = len(pair_list)
+        inputs = [word_index_dic[x[0]] for x in pair_list]
+        labels = [word_index_dic[x[1]] for x in pair_list]
+
+        embedding_dims = 5
+        W1 = Variable(torch.randn(embedding_dims, word_size).float(), requires_grad=True)
+        W2 = Variable(torch.randn(word_size, embedding_dims).float(), requires_grad=True)
+        num_epochs = 101
+        learning_rate = 0.001
+
+        for epo in range(num_epochs):
+            loss_val = 0
+            for data, target in zip(inputs, labels):
+                x = Variable(self.get_input_layer(word_size, data)).float()
+                y_true = Variable(torch.from_numpy(np.array([target])).long())
+
+                z1 = torch.matmul(W1, x)
+                z2 = torch.matmul(W2, z1)
+
+                log_softmax = F.log_softmax(z2, dim=0)
+
+                loss = F.nll_loss(log_softmax.view(1,-1), y_true)
+                loss_val += loss.item()
+                loss.backward()
+                W1.data -= learning_rate * W1.grad.data
+                W2.data -= learning_rate * W2.grad.data
+
+                W1.grad.data.zero_()
+                W2.grad.data.zero_()
+            if epo % 10 == 0:
+                print(f'Loss at epo {epo}: {loss_val/len(idx_pairs)}')
+        return word_index_dic, inverse_word_dic, W1, W2
+
+    def __get_word_index(self, word_set):
+        word_index_dic = dict()
+        inverse_word_dic = dict()
+        for i,word in enumerate(word_set):
+            word_index_dic[word] = i
+            inverse_word_dic[i] = word
+        return word_index_dic, inverse_word_dic
+
+    def get_input_layer(self, word_size, word_idx):
+        x = torch.zeros(word_size).float()
+        x[word_idx] = 1.0
+        return x
+
+    def similarity(self, v,u):
+        return torch.dot(v,u)/(torch.norm(v)*torch.norm(u))
 
     def add_knowledge_with_vm(self, sent_batch, max_entities=config.MAX_ENTITIES, add_pad=True, max_length=128):
         """
@@ -65,16 +123,14 @@ class KnowledgeGraph(object):
                 visible_matrix_batch - list of visible matrixs
                 seg_batch - list of segment tags
         """
-        FILE_DIR_PATH = os.path.dirname(os.path.abspath(__file__))
-        file_dir_2 = os.path.join(FILE_DIR_PATH,'..',"outputs")
-
-        split_sent_batch = [self.tokenizer.cut(sent) for sent in sent_batch]
-        # split_sent_batch = [jieba.cut(sent) for sent in sent_batch]
+        # split_sent_batch = [self.tokenizer.cut(sent) for sent in sent_batch]
+        split_sent_batch = [jieba.cut(sent) for sent in sent_batch]
         know_sent_batch = []
         position_batch = []
         visible_matrix_batch = []
         seg_batch = []
         for split_sent in split_sent_batch:
+
             # create tree
             sent_tree = []
             pos_idx_tree = []
@@ -82,49 +138,24 @@ class KnowledgeGraph(object):
             pos_idx = -1
             abs_idx = -1
             abs_idx_src = []
-            for sent_index, token in enumerate(split_sent):
-                
+            for token in split_sent:
+
                 # entities = list(self.lookup_table.get(token, []))[:max_entities]
-                lookup_keys = self.lookup_table.keys()
-                lookuped_word = [word for word in lookup_keys if token in word and len(token)*2 >= len(word)]
-                entitiy_li = [self.lookup_table[x] for x in lookuped_word]
-                entities =[]
-
-                for li in entitiy_li:
-                    entities.extend(li)
-
-                
+                entities = list(self.lookup_table.get(token, []))
 
                 #check similarity for entities
-                #get 0.85 > enetities > 0.4 similarity
+                #get enetities > 0.5 similarity
                 tmp_entities = []
-                pre_token = ''
-                post_token = ''
-                if sent_index > 0:
-                    pre_token = split_sent[sent_index-1]
-                if sent_index < len(split_sent)-1:
-                    post_token = split_sent[sent_index+1]
-                for entity in entities:
-                    similarity_score = 0
-                    if pre_token:
-                        similarity_score += self.embedding.similarity([pre_token,entity])*0.2
-                    if post_token:
-                        similarity_score += self.embedding.similarity([post_token,entity])*0.2
-                    similarity_score += self.embedding.similarity([token, entity])*0.6
-                    # similarity_score = self.embedding.similarity([token,entity])
-                    if 0.4 < similarity_score < 0.9:
-                        tmp_entities.append(entity)
-                        tmp_str = str(token)+ "\t" + str(entity)  + "\n"
-                        fo.write(tmp_str)
+                if token in word_index_dic:
+                    word_vector = self.W1[word_index_dic[token]]
+                    for entity in entities:
+                        entity_vector = self.W2[word_index_dic[entity]]
+                        if self.similarity(word_vector, entity_vector) > 0.5:
+                            tmp_entities.append(entity)
                 if tmp_entities:
                     entities = tmp_entities[:max_entities]
                 elif entities:
                     entities = entities[:max_entities]
-
-
-                
-
-
 
                 sent_tree.append((token, entities))
 
@@ -201,7 +232,6 @@ class KnowledgeGraph(object):
             position_batch.append(pos)
             visible_matrix_batch.append(visible_matrix)
             seg_batch.append(seg)
-        fo.close()
         
         return know_sent_batch, position_batch, visible_matrix_batch, seg_batch
 

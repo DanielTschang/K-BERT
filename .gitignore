@@ -99,3 +99,5 @@ ENV/
 *_results.tsv
 *.out
 *.zip
+brain/kgs/concat.spo
+brain/test.py

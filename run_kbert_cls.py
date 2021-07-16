@@ -20,7 +20,11 @@ from uer.model_saver import save_model
 from brain import KnowledgeGraph
 from multiprocessing import Process, Pool
 import numpy as np
-
+from brain.embedding_factory import EmbeddingFactory
+from brain.word_embedding_skip_gram import Word2Vec
+from brain.word_vectors_Chinese_Word_Vectors import ChineseWordVector
+from os.path import dirname
+import os
 
 class BertClassifier(nn.Module):
     def __init__(self, args, model):
@@ -70,6 +74,7 @@ def add_knowledge_worker(params):
 
     sentences_num = len(sentences)
     dataset = []
+
     for line_id, line in enumerate(sentences):
         if line_id % 10000 == 0:
             print("Progress of process {}: {}/{}".format(p_id, line_id, sentences_num))
@@ -79,7 +84,7 @@ def add_knowledge_worker(params):
             if len(line) == 2:
                 label = int(line[columns["label"]])
                 text = CLS_TOKEN + line[columns["text_a"]]
-   
+
                 tokens, pos, vm, _ = kg.add_knowledge_with_vm([text], add_pad=True, max_length=args.seq_length)
                 tokens = tokens[0]
                 pos = pos[0]
@@ -138,8 +143,9 @@ def add_knowledge_worker(params):
             else:
                 pass
             
-        except:
-            print("Error line: ", line)
+        except Exception as e:
+            print(sys.exc_info()[:3])
+
     return dataset
 
 
@@ -216,6 +222,8 @@ def main():
     parser.add_argument("--kg_name", required=True, help="KG name or path")
     parser.add_argument("--workers_num", type=int, default=1, help="number of process for loading dataset")
     parser.add_argument("--no_vm", action="store_true", help="Disable the visible_matrix")
+    parser.add_argument("--embedding_type",default="Bert",type=str,help="embedding type")
+    parser.add_argument("--embedding_folder_name",default="chinese_wwm_ext_pytorch", type=str,help="embedding folder name")
 
     args = parser.parse_args()
 
@@ -296,7 +304,8 @@ def main():
         spo_files = []
     else:
         spo_files = [args.kg_name]
-    kg = KnowledgeGraph(spo_files=spo_files, predicate=True)
+    # kg = KnowledgeGraph(spo_files=spo_files, predicate=True)
+    kg = KnowledgeGraph(spo_files=spo_files, embedding_type=args.embedding_type,folder_name=args.embedding_folder_name)
 
     def read_dataset(path, workers_num=1):
 

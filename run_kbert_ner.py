@@ -128,6 +128,8 @@ def main():
 
     # kg
     parser.add_argument("--kg_name", required=True, help="KG name or path")
+    parser.add_argument("--embedding_type", type=str,help="embedding type")
+    parser.add_argument("--embedding_folder_name", type=str,help="embedding folder name")
 
     args = parser.parse_args()
 
@@ -164,7 +166,7 @@ def main():
         spo_files = []
     else:
         spo_files = [args.kg_name]
-    kg = KnowledgeGraph(spo_files=spo_files, predicate=False)
+    kg = KnowledgeGraph(spo_files=spo_files, embedding_type=args.embedding_type,folder_name=args.embedding_folder_name)
 
     # Build bert model.
     # A pseudo target is added.
